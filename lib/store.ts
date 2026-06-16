@@ -19,13 +19,54 @@ const TABLE = "messages";
 // ---------------------------------------------------------------------------
 // Supabase client (server-side only — uses the service role key)
 // ---------------------------------------------------------------------------
-const SUPABASE_URL =
-  process.env.SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL;
-const SUPABASE_KEY =
-  process.env.SUPABASE_SERVICE_ROLE_KEY ?? process.env.SUPABASE_ANON_KEY;
+// Normalize the URL: trim whitespace and strip any trailing slash so the
+// Supabase client builds a clean `${url}/rest/v1/...` endpoint.
+const SUPABASE_URL = (
+  process.env.SUPABASE_URL ??
+  process.env.NEXT_PUBLIC_SUPABASE_URL ??
+  ""
+)
+  .trim()
+  .replace(/\/+$/, "");
+const SUPABASE_KEY = (
+  process.env.SUPABASE_SERVICE_ROLE_KEY ??
+  process.env.SUPABASE_ANON_KEY ??
+  ""
+).trim();
+
+// Validate that the URL looks like a Supabase project API URL
+// (https://<ref>.supabase.co) and NOT, say, the dashboard URL.
+function describeUrlProblem(url: string): string | null {
+  if (!url) return null; // handled by the fallback path below
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return `SUPABASE_URL is not a valid URL: "${url}"`;
+  }
+  if (parsed.protocol !== "https:") {
+    return `SUPABASE_URL must start with https:// (got "${parsed.protocol}")`;
+  }
+  if (parsed.hostname.endsWith(".supabase.com")) {
+    const ref = parsed.hostname.replace(/\.supabase\.com$/, "");
+    return `SUPABASE_URL host ends in ".supabase.com" but project API URLs end in ".supabase.co". Use "https://${ref}.supabase.co".`;
+  }
+  if (parsed.hostname === "supabase.com" || parsed.hostname === "www.supabase.com") {
+    return 'SUPABASE_URL looks like a dashboard URL. Use the project API URL "https://<project-ref>.supabase.co" from Settings → API, not the supabase.com dashboard link.';
+  }
+  if (parsed.pathname && parsed.pathname !== "/") {
+    return `SUPABASE_URL should have no path. Use just "https://<project-ref>.supabase.co" (got path "${parsed.pathname}")`;
+  }
+  return null;
+}
+
+const urlProblem = describeUrlProblem(SUPABASE_URL);
 
 let supabase: SupabaseClient | null = null;
 if (SUPABASE_URL && SUPABASE_KEY) {
+  if (urlProblem) {
+    console.error(`[store] ${urlProblem}`);
+  }
   supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
     auth: { persistSession: false },
   });
@@ -35,6 +76,38 @@ if (SUPABASE_URL && SUPABASE_KEY) {
     "[store] Supabase env vars are not set; falling back to in-memory storage. " +
       "Data will NOT persist across serverless instances on Vercel."
   );
+}
+
+// Diagnostics exposed via the /api/health endpoint.
+export function getStoreStatus() {
+  return {
+    backend: supabase ? "supabase" : "in-memory",
+    supabaseUrlSet: Boolean(SUPABASE_URL),
+    supabaseKeySet: Boolean(SUPABASE_KEY),
+    supabaseHost: SUPABASE_URL ? new URL(SUPABASE_URL).hostname : null,
+    urlProblem,
+  };
+}
+
+export async function checkConnection(): Promise<{
+  ok: boolean;
+  error?: string;
+}> {
+  if (!supabase) {
+    return { ok: false, error: "Supabase not configured (using in-memory)." };
+  }
+  try {
+    const { error } = await supabase
+      .from(TABLE)
+      .select("passphrase", { count: "exact", head: true });
+    if (error) return { ok: false, error: error.message };
+    return { ok: true };
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : "Unknown error",
+    };
+  }
 }
 
 // ---------------------------------------------------------------------------
