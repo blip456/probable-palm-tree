@@ -14,6 +14,7 @@ A small Next.js (App Router) + React app, deployable to Vercel, that lets you:
 | Store endpoint (`POST`) | `app/api/messages/route.ts` |
 | Retrieve endpoint (`GET`) | `app/api/messages/[passphrase]/route.ts` |
 | Storage + passphrase generation | `lib/store.ts` |
+| Database schema | `supabase/schema.sql` |
 
 ### API
 
@@ -29,13 +30,36 @@ GET /api/messages/:passphrase
 
 Passphrases look like `brave-amber-otter-72` — easy to read and share.
 
-## Storage note
+## Storage (Supabase)
 
-Data is kept in an **in-memory** `Map` (see `lib/store.ts`). This is great for a
-demo, but on Vercel/serverless the store is per-instance and is cleared on cold
-starts, so it is **not durable**. To persist data, replace the implementation in
-`lib/store.ts` with a real database (e.g. Vercel KV, Postgres, or Redis) — the
-rest of the app only depends on the `saveMessage` / `getMessage` functions.
+Data is stored in **Supabase** (hosted Postgres) so it is durable and shared
+across all serverless instances on Vercel. The app reads/writes from server-side
+API routes using the Supabase **service role** key.
+
+> If the Supabase env vars are not set, the app falls back to a per-instance
+> **in-memory** store. That's fine locally, but on Vercel it is *not* shared
+> across instances — which is exactly why a `POST` could succeed yet the matching
+> `GET` returned "no data". Configure Supabase to fix that.
+
+### Setup
+
+1. Create a project at [supabase.com](https://supabase.com).
+2. In the Supabase dashboard, open **SQL Editor** and run the contents of
+   [`supabase/schema.sql`](supabase/schema.sql) to create the `messages` table.
+3. In **Settings → API**, copy the **Project URL** and the **service_role** key.
+4. Set these environment variables (see [`.env.example`](.env.example)):
+
+   ```
+   SUPABASE_URL=https://your-project-ref.supabase.co
+   SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
+   ```
+
+   - **Locally:** put them in a `.env.local` file.
+   - **On Vercel:** add them in **Project → Settings → Environment Variables**,
+     then **redeploy**.
+
+The `service_role` key is secret and used only on the server — never prefix it
+with `NEXT_PUBLIC_` and never expose it to the browser.
 
 ## Local development
 

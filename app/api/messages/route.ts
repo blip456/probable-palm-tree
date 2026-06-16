@@ -34,7 +34,14 @@ export async function POST(request: Request) {
     );
   }
 
-  const passphrase = saveMessage(name.trim(), message.trim());
-
-  return NextResponse.json({ passphrase }, { status: 201 });
+  try {
+    const passphrase = await saveMessage(name.trim(), message.trim());
+    return NextResponse.json({ passphrase }, { status: 201 });
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : "Unknown error";
+    return NextResponse.json(
+      { error: `Could not save message: ${detail}` },
+      { status: 500 }
+    );
+  }
 }
