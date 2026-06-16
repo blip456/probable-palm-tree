@@ -16,14 +16,22 @@ export async function GET(
     );
   }
 
-  const stored = getMessage(passphrase);
+  try {
+    const stored = await getMessage(passphrase);
 
-  if (!stored) {
+    if (!stored) {
+      return NextResponse.json(
+        { error: "No data found for that passphrase." },
+        { status: 404 }
+      );
+    }
+
+    return NextResponse.json(stored, { status: 200 });
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : "Unknown error";
     return NextResponse.json(
-      { error: "No data found for that passphrase." },
-      { status: 404 }
+      { error: `Could not fetch message: ${detail}` },
+      { status: 500 }
     );
   }
-
-  return NextResponse.json(stored, { status: 200 });
 }

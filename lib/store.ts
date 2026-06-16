@@ -1,11 +1,12 @@
-// Simple in-memory store for messages, keyed by a generated passphrase.
+import { createClient, SupabaseClient } from "@supabase/supabase-js";
+
+// Storage for messages, keyed by a generated passphrase.
 //
-// NOTE ON PERSISTENCE: This uses an in-memory Map. On Vercel (or any
-// serverless platform) the store lives inside a single function instance and
-// is NOT shared across instances, and it is cleared on cold starts. That is
-// fine for a demo / prototype as requested. For durable storage, swap the
-// implementation in this file for a real database (e.g. Vercel KV, Postgres,
-// Redis) — the rest of the app only depends on the exported functions below.
+// Primary backend is Supabase (hosted Postgres) so data is durable and shared
+// across all serverless instances on Vercel. If the Supabase env vars are not
+// configured (e.g. local dev without credentials) we transparently fall back to
+// an in-memory Map so the app still runs — but note that the in-memory store is
+// per-instance and NOT shared across Vercel invocations.
 
 export type StoredMessage = {
   name: string;
@@ -13,21 +14,44 @@ export type StoredMessage = {
   createdAt: string;
 };
 
-// Persist the Map on globalThis so it survives module reloads during
-// development (Next.js hot-reloading otherwise resets module-level state).
+const TABLE = "messages";
+
+// ---------------------------------------------------------------------------
+// Supabase client (server-side only — uses the service role key)
+// ---------------------------------------------------------------------------
+const SUPABASE_URL =
+  process.env.SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL;
+const SUPABASE_KEY =
+  process.env.SUPABASE_SERVICE_ROLE_KEY ?? process.env.SUPABASE_ANON_KEY;
+
+let supabase: SupabaseClient | null = null;
+if (SUPABASE_URL && SUPABASE_KEY) {
+  supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
+    auth: { persistSession: false },
+  });
+} else if (process.env.NODE_ENV === "production") {
+  // Surface a clear warning in production logs if storage isn't configured.
+  console.warn(
+    "[store] Supabase env vars are not set; falling back to in-memory storage. " +
+      "Data will NOT persist across serverless instances on Vercel."
+  );
+}
+
+// ---------------------------------------------------------------------------
+// In-memory fallback store (persisted on globalThis to survive HMR in dev)
+// ---------------------------------------------------------------------------
 const globalForStore = globalThis as unknown as {
   __messageStore?: Map<string, StoredMessage>;
 };
-
-const store: Map<string, StoredMessage> =
+const memoryStore: Map<string, StoredMessage> =
   globalForStore.__messageStore ?? new Map<string, StoredMessage>();
-
 if (!globalForStore.__messageStore) {
-  globalForStore.__messageStore = store;
+  globalForStore.__messageStore = memoryStore;
 }
 
-// Word lists used to build a human-friendly, memorable passphrase such as
-// "brave-amber-otter-72".
+// ---------------------------------------------------------------------------
+// Passphrase generation — human-friendly, e.g. "brave-amber-otter-72"
+// ---------------------------------------------------------------------------
 const ADJECTIVES = [
   "brave", "calm", "clever", "eager", "gentle", "happy", "jolly", "kind",
   "lucky", "mighty", "noble", "proud", "quiet", "swift", "witty", "bright",
@@ -52,22 +76,69 @@ export function generatePassphrase(): string {
   return `${pick(ADJECTIVES)}-${pick(COLORS)}-${pick(ANIMALS)}-${number}`;
 }
 
-export function saveMessage(name: string, message: string): string {
-  // Make sure the passphrase is unique within the store.
-  let passphrase = generatePassphrase();
-  while (store.has(passphrase)) {
-    passphrase = generatePassphrase();
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
+export async function saveMessage(
+  name: string,
+  message: string
+): Promise<string> {
+  if (supabase) {
+    // Retry on the (rare) chance of a passphrase collision (PK violation).
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const passphrase = generatePassphrase();
+      const { error } = await supabase
+        .from(TABLE)
+        .insert({ passphrase, name, message });
+
+      if (!error) {
+        return passphrase;
+      }
+      // 23505 = unique_violation; regenerate and try again.
+      if (error.code !== "23505") {
+        throw new Error(`Failed to save message: ${error.message}`);
+      }
+    }
+    throw new Error("Could not generate a unique passphrase. Please retry.");
   }
 
-  store.set(passphrase, {
+  // In-memory fallback.
+  let passphrase = generatePassphrase();
+  while (memoryStore.has(passphrase)) {
+    passphrase = generatePassphrase();
+  }
+  memoryStore.set(passphrase, {
     name,
     message,
     createdAt: new Date().toISOString(),
   });
-
   return passphrase;
 }
 
-export function getMessage(passphrase: string): StoredMessage | undefined {
-  return store.get(passphrase.trim().toLowerCase());
+export async function getMessage(
+  passphrase: string
+): Promise<StoredMessage | undefined> {
+  const key = passphrase.trim().toLowerCase();
+
+  if (supabase) {
+    const { data, error } = await supabase
+      .from(TABLE)
+      .select("name, message, created_at")
+      .eq("passphrase", key)
+      .maybeSingle();
+
+    if (error) {
+      throw new Error(`Failed to fetch message: ${error.message}`);
+    }
+    if (!data) {
+      return undefined;
+    }
+    return {
+      name: data.name,
+      message: data.message,
+      createdAt: data.created_at,
+    };
+  }
+
+  return memoryStore.get(key);
 }
