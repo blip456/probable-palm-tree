@@ -61,6 +61,17 @@ API routes using the Supabase **service role** key.
 The `service_role` key is secret and used only on the server — never prefix it
 with `NEXT_PUBLIC_` and never expose it to the browser.
 
+### Troubleshooting
+
+Visit `/api/health` on your deployment — it reports the backend, env-var
+presence, resolved host, the key's role, and live connectivity (no secrets).
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| `fetch failed` | Wrong `SUPABASE_URL` host | Use `https://<ref>.supabase.co` (note `.co`, not `.com`), no trailing path |
+| `permission denied for table messages` | Key is the **anon/publishable** key, not **service_role/secret** | Set `SUPABASE_SERVICE_ROLE_KEY` to the secret `service_role` key (Settings → API), then redeploy. `/api/health` should show `keyRole: "service_role"` (or `"secret"`) |
+| `relation "messages" does not exist` | Table not created | Run `supabase/schema.sql` in the SQL editor |
+
 ## Local development
 
 ```bash

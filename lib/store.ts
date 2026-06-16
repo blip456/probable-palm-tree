@@ -78,14 +78,44 @@ if (SUPABASE_URL && SUPABASE_KEY) {
   );
 }
 
+// Identify the role/kind of the configured key WITHOUT exposing the secret.
+// - Legacy keys are JWTs whose payload has a `role` claim (anon | service_role).
+// - New-style keys are prefixed: `sb_secret_...` or `sb_publishable_...`.
+function describeKey(key: string): { keyRole: string | null; keyOk: boolean } {
+  if (!key) return { keyRole: null, keyOk: false };
+  if (key.startsWith("sb_secret_")) return { keyRole: "secret", keyOk: true };
+  if (key.startsWith("sb_publishable_")) {
+    return { keyRole: "publishable", keyOk: false };
+  }
+  const parts = key.split(".");
+  if (parts.length === 3) {
+    try {
+      const payload = JSON.parse(
+        Buffer.from(parts[1], "base64").toString("utf8")
+      );
+      const role: string | null = payload.role ?? null;
+      return { keyRole: role, keyOk: role === "service_role" };
+    } catch {
+      // fall through
+    }
+  }
+  return { keyRole: "unknown", keyOk: false };
+}
+
 // Diagnostics exposed via the /api/health endpoint.
 export function getStoreStatus() {
+  const { keyRole, keyOk } = describeKey(SUPABASE_KEY);
   return {
     backend: supabase ? "supabase" : "in-memory",
     supabaseUrlSet: Boolean(SUPABASE_URL),
     supabaseKeySet: Boolean(SUPABASE_KEY),
     supabaseHost: SUPABASE_URL ? new URL(SUPABASE_URL).hostname : null,
     urlProblem,
+    // The key SHOULD be the service_role (legacy) or secret (new) key so it
+    // bypasses RLS. If this reports "anon" or "publishable", that's the cause
+    // of "permission denied for table messages".
+    keyRole,
+    keyHasWriteAccess: keyOk,
   };
 }
 
