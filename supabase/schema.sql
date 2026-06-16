@@ -13,3 +13,10 @@ create table if not exists public.messages (
 -- are needed. With RLS on and no policies, the table is not readable/writable by
 -- the anon/public key, which is what we want.
 alter table public.messages enable row level security;
+
+-- Grant the table privileges the app needs to the service_role. Tables created
+-- via raw SQL do not always inherit these grants, which surfaces as
+-- "permission denied for table messages" (SQLSTATE 42501) even though
+-- service_role bypasses RLS. service_role needs INSERT (save) and SELECT (fetch).
+grant usage on schema public to service_role;
+grant select, insert on table public.messages to service_role;
