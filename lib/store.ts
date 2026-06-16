@@ -127,10 +127,17 @@ export async function checkConnection(): Promise<{
     return { ok: false, error: "Supabase not configured (using in-memory)." };
   }
   try {
-    const { error } = await supabase
-      .from(TABLE)
-      .select("passphrase", { count: "exact", head: true });
-    if (error) return { ok: false, error: error.message };
+    // Use a real (non-HEAD) select so PostgREST returns a JSON error body with
+    // a useful message (e.g. "permission denied for table messages") instead of
+    // an empty string.
+    const { error } = await supabase.from(TABLE).select("passphrase").limit(1);
+    if (error) {
+      const detail =
+        [error.message, error.hint, error.details, error.code]
+          .filter(Boolean)
+          .join(" | ") || "Unknown Supabase error (empty response).";
+      return { ok: false, error: detail };
+    }
     return { ok: true };
   } catch (err) {
     return {
